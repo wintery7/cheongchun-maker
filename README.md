@@ -3,7 +3,7 @@
 의자 하나로 10분. 부모님 체력이 동년배 100명 중 몇 번째인지, 기록이 비슷한 어르신들이
 국민체력100에서 실제로 어떤 운동처방을 받았는지 알려주는 모바일 웹 서비스입니다.
 
-- 서비스 URL: `https://<GitHub 아이디>.github.io/cheongchun/` (배포 후 기입)
+- 서비스 URL: https://wintery7.github.io/cheongchun-maker/
 - 운영주체: 김민재, 이세림
 - 구조: 정적 웹 한 파일(`index.html`) + 사전 가공 데이터. 서버·로그인·외부 API 없음.
   입력값은 브라우저 안에서만 계산되며 전송·저장되지 않습니다(사용자가 '기기에 저장'을 누른 경우만 해당 기기 localStorage).
@@ -52,6 +52,7 @@
 pip install pandas numpy scikit-learn
 python3 scripts/preprocess.py --raw raw --out data   # data/*.json 생성, 처리 요약 출력
 python3 scripts/build.py                              # data를 넣어 index.html 생성
+python3 scripts/effects.py --raw raw --data data     # 기대효과 수치 재현 → data/effects.json
 ```
 
 ## 사용한 외부 자원과 라이선스

@@ -1,0 +1,16 @@
+{
+  "records": 136898,
+  "period": {
+    "min": "20220103",
+    "max": "20260731"
+  },
+  "low10_any_share": 0.1976,
+  "fitage_plus2_share": 0.4731,
+  "per_1000": {
+    "low10_any": 198,
+    "fitage_plus2": 473
+  },
+  "assumption_visit_rate": 0.1,
+  "per_1000_center_visits": 20,
+  "note": "이용자 분포가 센터 측정 어르신과 같다는 가정. 방문 전환율 10%는 가정치"
+}
