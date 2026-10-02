@@ -165,6 +165,8 @@ ul.ex li{display:grid;grid-template-columns:1fr auto;gap:.15rem 1rem;padding:.75
 ul.ex .nm{font-weight:600}
 ul.ex .sh{font-family:var(--serif);font-weight:700;color:var(--pine);text-align:right}
 ul.ex .tags{grid-column:1/-1;display:flex;gap:.4rem;flex-wrap:wrap}
+ul.ex .cmp{grid-column:1/-1;font-size:.88rem;color:var(--muted)}
+ul.ex .sh{white-space:nowrap;font-size:1rem}
 .tag{font-size:.8rem;padding:.1rem .55rem;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
 .tag.hi{border-color:var(--marigold);color:var(--ink);background:var(--marigold-soft)}
 .tabs{display:flex;gap:.5rem;margin:.75rem 0 0}
@@ -342,7 +344,7 @@ footer.src strong{color:var(--ink);font-weight:600}
 </main>
 
 <footer class="src" id="sources">
-  <p><strong>데이터 출처</strong> 서울올림픽기념국민체육진흥공단, 「체력측정 및 운동처방 종합 데이터」(문화빅데이터플랫폼, 측정일 <span data-meta="period"></span>), 「전국체육시설현황 데이터」(문화빅데이터플랫폼, 2026년 7월 파일).</p>
+  <p><strong>데이터 출처</strong> 서울올림픽기념국민체육진흥공단, 「체력측정 및 운동처방 종합 데이터」(문화빅데이터플랫폼, 측정일 <span data-meta="rx_period"></span>), 「체력측정 항목별 측정 데이터」(문화빅데이터플랫폼, 측정일 <span data-meta="item_period"></span>), 「전국체육시설현황 데이터」(문화빅데이터플랫폼, 2026년 7월 파일).</p>
   <p>운동 이름은 국민체력100 운동처방 기록에 적힌 그대로 보여드려요. 입력한 나이와 기록은 이 기기 안에서만 계산되고 어디에도 전송되지 않아요.</p>
   <p>이 서비스는 건강관리 참고용 서비스이며 의학적 진단을 대신하지 않아요.</p>
   <p>운영: 김민재, 이세림</p>
@@ -461,7 +463,7 @@ function nextScreen(test){ return test==="chair" ? "t2" : test==="step" ? "t3" :
 function setupCountTest(sec){
   var test=sec.dataset.test, T=TESTS[test], stage=$('[data-role="stage"]', sec);
   function ready(){
-    sec.classList.remove("running");
+    sec.classList.remove("running"); resetManual(sec);
     stage.innerHTML = ringHTML() + '<button class="btn btn-primary" data-role="start">시작하기</button>';
     $('[data-role="big"]',stage).textContent = T.secs===30 ? "30" : "2:00";
     $('[data-role="sub"]',stage).textContent = T.secs===30 ? "30초 동안 측정해요" : "2분 동안 측정해요";
@@ -518,6 +520,7 @@ function setupCountTest(sec){
 function setupTugTest(sec){
   var stage=$('[data-role="stage"]', sec);
   function ready(){
+    resetManual(sec);
     state.tugTrials = state.tugTrials || [];
     render();
   }
@@ -560,6 +563,7 @@ function setupTugTest(sec){
   onEnter.t3=ready;
 }
 
+function resetManual(sec){ var m=$('[data-role="manual"]',sec), inp=$('[data-role="manualInput"]',sec); if(m) m.hidden=true; if(inp) inp.value=""; }
 function wireManual(sec, test, save){
   var m=$('[data-role="manual"]',sec), inp=$('[data-role="manualInput"]',sec);
   $('[data-role="manualToggle"]',sec).addEventListener("click", function(){ m.hidden=!m.hidden; if(!m.hidden) inp.focus(); });
@@ -605,8 +609,8 @@ function baseShares(sex){
   out.forEach(function(o){ for(var id in o) o[id]/=n; });
   BASE[sex]=out; return out;
 }
-function neighbors(sex, age, vals){
-  var K=D.knn[sex], mu=K.mu, sd=K.sd, q=[age, vals.chair, vals.step, vals.tug];
+function neighbors(set, sex, age, vals){
+  var K=set[sex], mu=K.mu, sd=K.sd, q=[age, vals.chair, vals.step, vals.tug];
   var use=q.map(function(x){ return x!=null && !isNaN(x); });
   var z=q.map(function(x,i){ return use[i]?(x-mu[i])/sd[i]:0; });
   var arr=K.rows.map(function(r){ var rv=[r[0],r[1],r[2],r[3]/K.tug_scale], d=0;
@@ -618,9 +622,11 @@ function rankEx(nb, sex, k){
   var j=k-5, base=baseShares(sex)[j], cnt={}, withRx=nb.filter(function(r){ return r[5].length||r[6].length||r[7].length; }), n=withRx.length;
   withRx.forEach(function(r){ r[k].forEach(function(id){ cnt[id]=(cnt[id]||0)+1; }); });
   return {n:n, list:Object.keys(cnt).map(function(id){ var s=cnt[id]/n;
-    return {id:+id, name:D.exercises[id][0], place:D.exercises[id][1], share:s, lift:s/(base[id]||1e-9)}; })
+    return {id:+id, name:D.exercises[id][0], place:D.exercises[id][1], count:cnt[id], share:s, base:(base[id]||0), lift:s/(base[id]||1e-9)}; })
     .sort(function(a,b){ return b.share-a.share || b.lift-a.lift; })};
 }
+function pct(x){ var v=x*100; return (v<10 ? (Math.round(v*10)/10) : Math.round(v))+"%"; }
+function pct1(x){ return (Math.round(x*1000)/10)+"%"; }
 function median(a){ var b=a.slice().sort(function(x,y){return x-y;}), m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2; }
 
 /* ---------- result ---------- */
@@ -639,8 +645,10 @@ function compute(){
   out.overallRank = rankOf(out.overallBetter);
   out.weak = out.tests.slice().sort(function(a,b){ return a.better-b.better; })[0];
   out.low = out.tests.filter(function(x){ return x.better<=10; });
-  var nb=neighbors(sex, state.age, {chair:state.chair, step:state.step, tug:state.tug});
-  var grades=nb.map(function(r){return r[4];}).filter(function(g){return g>0;});
+  var vals={chair:state.chair, step:state.step, tug:state.tug};
+  var nb=neighbors(D.knn, sex, state.age, vals);          // 운동처방: 2026.5~7 처방 기록
+  var nbG=neighbors(D.knn_grade, sex, state.age, vals);   // 예상 등급: 2025.6 이후 6등급 체계 기록
+  var grades=nbG.map(function(r){return r[4];}).filter(function(g){return g>0;});
   out.grade = {pred: Math.floor(median(grades)+.5), dist:[1,2,3,4,5,6].map(function(g){ return grades.filter(function(x){return x===g;}).length/grades.length; }), n:grades.length};
   out.main=rankEx(nb, sex, 6); out.prep=rankEx(nb, sex, 5); out.cool=rankEx(nb, sex, 7);
   return out;
@@ -677,7 +685,7 @@ function renderResult(){
   var W=TESTS[R.weak.key];
   html+='<div class="gap-lg"><h3>먼저 챙길 힘: '+W.short+'</h3><p class="muted">'+W.what+'이 측정한 항목 중 상대적으로 약해요.</p></div>';
   html+='<div class="gap-lg"><h3>기록이 비슷한 어르신 '+R.main.n+'명이 실제로 받은 운동</h3>'+
-    '<p class="muted small">국민체력100 운동처방사가 이분들께 처방한 본운동이에요. 숫자는 이 운동을 처방받은 비율이에요.</p>'+
+    '<p class="muted small">국민체력100 운동처방사가 이분들께 처방한 본운동이에요. 오른쪽은 이 운동을 처방받은 분의 수예요.</p>'+
     '<div class="tabs" role="tablist"><button role="tab" aria-selected="true" data-ex="all">많이 받은 순</button><button role="tab" aria-selected="false" data-ex="home">집에서 할 수 있는 것</button></div>'+
     '<ul class="ex" id="exList"></ul>'+
     '<div class="routine" id="routine"></div>'+
@@ -685,7 +693,7 @@ function renderResult(){
   // grade
   var g=R.grade, top=g.dist.indexOf(Math.max.apply(null,g.dist));
   html+='<div class="gap-lg"><h3>센터에서 재면 예상 등급은 '+g.pred+'등급 안팎</h3>'+
-    '<p class="muted small">기록이 비슷한 '+g.n+'명이 받은 국민체력100 인증등급이에요. 2,000건으로 검증했을 때 실제 등급과 1등급 이내로 맞은 비율은 '+Math.round(D.meta.knn_eval.within1*1000)/10+'%예요.</p>'+
+    '<p class="muted small">기록이 비슷한 '+g.n+'명이 받은 국민체력100 인증등급이에요(6등급 체계가 시작된 2025년 6월 이후 기록 '+fmt(D.meta.grade_records)+'건 기준). '+fmt(D.meta.knn_eval.n_test)+'건으로 검증했을 때 1등급 이내로 맞은 비율은 '+pct1(D.meta.knn_eval.within1)+'로, 계산 없이 한 등급만 찍을 때('+pct1(D.meta.knn_eval.baseline_within1)+')보다 높아요.</p>'+
     '<div class="grades" aria-hidden="true">'+g.dist.map(function(p,i){ return '<div class="'+(i===top?"top":"")+'" style="height:'+Math.max(4,p/Math.max.apply(null,g.dist)*100)+'px"><span>'+Math.round(p*100)+'%</span></div>'; }).join("")+'</div>'+
     '<div class="grade-labels">'+[1,2,3,4,5,6].map(function(x){return "<span>"+x+"등급</span>";}).join("")+'</div>'+
     '<p class="sr">'+g.dist.map(function(p,i){return (i+1)+"등급 "+Math.round(p*100)+"%";}).join(", ")+'</p>'+
@@ -703,7 +711,7 @@ function renderResult(){
   html+='<div class="gap-lg"><details><summary>이 결과는 어떻게 계산했나요?</summary>'+
     '<p>비교 기준은 국민체력100 체력인증센터에서 '+D.meta.period+'에 측정한 만 65세 이상 기록 '+fmt(D.meta.seniors)+'건이에요. 성별과 5세 단위 나이대가 같은 분들 사이에서 순위를 계산했어요(이번 비교 대상 '+R.tests.map(function(t){return TESTS[t.key].short+" "+fmt(t.n)+"명";}).join(", ")+').</p>'+
     '<p>체력나이는 나이별 중간 기록을 이은 곡선에서 같은 기록이 나오는 나이예요. 이 데이터는 65세 이상만 있어서 65세보다 젊게는 계산하지 않아요.</p>'+
-    '<p>비슷한 어르신은 세 가지 기록이 모두 있는 '+fmt(D.meta.complete)+'건 중 성별이 같고 나이와 기록이 가장 가까운 '+D.meta.knn_eval.k+'명이에요. 예상 등급은 이분들 등급의 중앙값이고, 2,000건 검증에서 정확히 맞은 비율은 '+Math.round(D.meta.knn_eval.exact*1000)/10+'%, 1등급 이내는 '+Math.round(D.meta.knn_eval.within1*1000)/10+'%였어요.</p>'+
+    '<p>운동처방을 보여주는 비슷한 어르신은 처방 내용이 있는 '+D.meta.rx_period+' 기록 중 세 가지 기록이 모두 있는 '+fmt(D.meta.complete)+'건에서, 성별이 같고 나이와 기록이 가장 가까운 '+D.meta.knn_eval.k+'명이에요. 예상 등급은 2025년 6월 이후 기록 '+fmt(D.meta.grade_records)+'건에서 같은 방식으로 찾은 100명의 등급 중앙값이에요. '+fmt(D.meta.knn_eval.n_test)+'건 검증에서 정확히 맞은 비율은 '+pct1(D.meta.knn_eval.exact)+'(한 등급만 찍으면 '+pct1(D.meta.knn_eval.baseline_exact)+'), 1등급 이내는 '+pct1(D.meta.knn_eval.within1)+'(찍으면 '+pct1(D.meta.knn_eval.baseline_within1)+')였어요.</p>'+
     '<p>집에서 잰 기록은 센터 측정과 장비와 환경이 달라 차이가 날 수 있어요. 정확한 등급과 운동처방은 국민체력100 센터에서 받으세요.</p></details></div>';
   $("#resultBody").innerHTML=html;
   drawCrowd($("#resCrowd"), R.overallRank, true);
@@ -723,8 +731,9 @@ function renderEx(R, mode){
   if(!list.length){ ul.innerHTML='<li><span class="nm">비슷한 분들의 본운동 중 집에서 할 수 있는 운동이 적어요. 아래 준비·정리 운동부터 시작해 보세요.</span></li>'; }
   else ul.innerHTML=list.map(function(e){
     var hi = e.lift>=1.3 && e.share>=.08;
-    return '<li><span class="nm">'+esc(e.name)+'</span><span class="sh">'+Math.round(e.share*100)+'%</span><span class="tags"><span class="tag">'+PLACE[e.place]+'</span>'+
-      (hi?'<span class="tag hi">같은 성별 어르신 평균보다 '+(Math.round(e.lift*10)/10)+'배 자주 처방</span>':'')+'</span></li>';
+    return '<li><span class="nm">'+esc(e.name)+'</span><span class="sh">'+R.main.n+'명 중 '+e.count+'명</span>'+
+      '<span class="cmp">같은 성별 어르신 전체 '+pct(e.base)+', 비슷한 분들 '+pct(e.share)+'</span>'+
+      '<span class="tags"><span class="tag">'+PLACE[e.place]+'</span>'+(hi?'<span class="tag hi">비슷한 분들께 특히 많이</span>':'')+'</span></li>';
   }).join("");
   var pick=function(L){ return L.list.filter(function(e){ return mode==="home"?e.place===0:true; }).slice(0,2).map(function(e){return esc(e.name);}).join(", ")||"-"; };
   $("#routine").innerHTML='<div><b>준비운동으로 많이 받은 것</b>'+pick(R.prep)+'</div><div><b>정리운동으로 많이 받은 것</b>'+pick(R.cool)+'</div>';
@@ -763,7 +772,7 @@ function showPlaces(R){
   // 1) 국민체력100 centers in sido
   var cs=D.centers.filter(function(c){ return c.sido===sidoName; }).sort(function(a,b){ return ((b.sgg===sggName)-(a.sgg===sggName)) || (b.senior-a.senior); });
   var html='<h3 style="margin-top:1rem">'+esc(sidoName)+'의 국민체력100 측정 센터</h3>';
-  if(cs.length){ html+='<p class="muted small">숫자는 '+D.meta.period+' 어르신 측정 건수예요. 위치와 예약은 국민체력100 누리집에서 확인하세요.</p><ul class="places">'+
+  if(cs.length){ html+='<p class="muted small">숫자는 '+D.meta.rx_period+' 어르신 측정 건수예요. 위치와 예약은 국민체력100 누리집에서 확인하세요.</p><ul class="places">'+
     cs.slice(0,6).map(function(c){ return '<li><div class="nm">'+esc(c.name)+(c.mobile&&c.name.indexOf("출장")<0?' (출장 측정)':'')+'</div><div class="meta">'+(c.sgg?esc(c.sgg)+', ':'')+'어르신 측정 '+fmt(c.senior)+'건</div></li>'; }).join("")+
     '</ul><a class="small" href="'+NFA_URL+'" target="_blank" rel="noopener">국민체력100 누리집에서 센터 찾고 예약하기</a>';
   } else html+='<p class="muted">이 지역에는 이 기간 측정 기록이 있는 센터가 없어요. 국민체력100 누리집에서 가까운 센터를 찾아보세요.</p>';
@@ -831,6 +840,8 @@ function renderHistory(R, justSaved){
 function boot(){
   $$('[data-meta="seniors"]').forEach(function(e){ e.textContent=fmt(D.meta.seniors); });
   $$('[data-meta="period"]').forEach(function(e){ e.textContent=D.meta.period; });
+  $$('[data-meta="rx_period"]').forEach(function(e){ e.textContent=D.meta.rx_period; });
+  $$('[data-meta="item_period"]').forEach(function(e){ e.textContent=D.meta.item_period; });
   drawCrowd($("#heroCrowd"), 38);
   var id=(location.hash||"#home").slice(1);
   go(["home","profile"].indexOf(id)>=0?id:"home", false);

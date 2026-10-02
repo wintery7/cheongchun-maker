@@ -8,6 +8,10 @@
        기간: 측정일(MESURE_DE) 2026-05-01 ~ 2026-07-31
   [D2] 전국체육시설현황 데이터
        파일: KS_WNTY_PHSTRN_FCLTY_STTUS_202607.csv
+  [D3] 체력측정 항목별 측정 데이터
+       파일: KS_NFA_FTNESS_MESURE_ITEM_MESURE_INFO_YYYYMM.csv (2022.01~2026.07, 55개)
+       운동처방·회원번호는 없고 측정값·인증등급(COAW_FLAG_NM)이 있다.
+       → 동년배 순위·체력나이·예상 등급의 표본을 늘리는 데 쓴다.
 
 출력 (../data/*.json, 웹앱이 그대로 사용)
   norms.json      성별 x 연령대별 측정항목 백분위표 (동년배 순위 계산)
@@ -30,10 +34,12 @@ from sklearn.neighbors import NearestNeighbors
 
 # --------------------------------------------------------------------
 # 0. [D1] 측정항목 컬럼 매핑
-#    원천은 측정항목을 MESURE_IEM_###_VALUE 코드로만 제공한다.
-#    아래 매핑은 국민체력100 어르신 측정항목 구성과 값의 단위·범위,
-#    그리고 공식(BMI, 상대악력)과의 일치율로 검증했다(검증값은 meta.json).
-#    ※ 문화빅데이터플랫폼 '컬럼 정의서'와 최종 대조 필요 [확인 필요]
+#    문화빅데이터플랫폼 '컬럼 정의서' 기준. 원천은 측정항목을
+#    MESURE_IEM_###_VALUE 코드로 제공한다.
+#    ※ 정의서는 026(3m 표적 돌아오기) 단위를 '회'로 적고 있으나 실제 값의
+#      95.7%가 소수점(중앙값 5.5)이라 초 단위로 처리한다.
+#    verify_mapping()은 계산 컬럼(BMI, 악력)과 검사 간 상관이 정상인지
+#    확인하는 내부 품질 점검이다(결과는 meta.json).
 # --------------------------------------------------------------------
 COL = {
     "height":  "MESURE_IEM_001_VALUE",  # 신장(cm)
@@ -93,6 +99,40 @@ def load_fitness(raw_dir):
     return df, info
 
 
+def load_items(raw_dir, covered_months):
+    """[D3] 항목별 측정 데이터 적재.
+    - 바이트 단위로 같은 파일은 한 번만 쓴다(원천 202210 파일이 202309와 동일).
+    - [D1]이 있는 달(2026.05~07)은 [D1]을 쓴다. 두 데이터의 해당 기간 어르신
+      기록 99.9%가 일치해, 함께 쓰면 같은 측정을 두 번 세게 되기 때문.
+    - 컬럼명을 [D1]과 맞춘다: AGE_FLAG_NM→AGRDE_FLAG_NM, MESURE_DAY→MESURE_DE,
+      COAW_FLAG_NM→CRTFC_FLAG_NM. 운동처방·회원번호는 없음."""
+    import hashlib
+    files = sorted(f for f in os.listdir(raw_dir)
+                   if f.startswith("KS_NFA_FTNESS_MESURE_ITEM_MESURE_INFO") and f.endswith(".csv"))
+    seen, used, dup, skipped, frames = {}, [], [], [], []
+    for f in files:
+        path = os.path.join(raw_dir, f)
+        h = hashlib.md5(open(path, "rb").read()).hexdigest()
+        if h in seen:
+            dup.append({"file": f, "same_as": seen[h]})
+            continue
+        seen[h] = f
+        d = pd.read_csv(path, dtype=str, encoding="utf-8-sig", engine="python", on_bad_lines="skip")
+        d = d.rename(columns={"AGE_FLAG_NM": "AGRDE_FLAG_NM", "MESURE_DAY": "MESURE_DE", "COAW_FLAG_NM": "CRTFC_FLAG_NM"})
+        d["_month"] = d.MESURE_DE.str[:6]
+        drop = d._month.isin(covered_months)
+        if drop.any():
+            skipped.append({"file": f, "rows_replaced_by_D1": int(drop.sum())})
+        d = d[~drop]
+        d["MVM_PRSCRPTN_CN"] = ""
+        frames.append(d)
+    it = pd.concat(frames, ignore_index=True)
+    info = {"files": files, "duplicate_files": dup, "replaced_by_D1": skipped,
+            "records_used_all_ages": int(len(it)),
+            "senior_rows_by_month": it[it.AGRDE_FLAG_NM == "어르신"]._month.value_counts().sort_index().to_dict()}
+    return it, info
+
+
 def clean_seniors(df):
     # 연령대구분(AGRDE_FLAG_NM)='어르신' 이고 만 65세 이상인 기록만 사용
     s = df[df.AGRDE_FLAG_NM == "어르신"].copy()
@@ -102,6 +142,8 @@ def clean_seniors(df):
         "grade": pd.to_numeric(s.CRTFC_FLAG_NM.str.extract(r"(\d)")[0], errors="coerce"),  # 인증등급 'n등급'→n
         "rx": s.MVM_PRSCRPTN_CN.fillna(""),                          # 운동처방 내용(문자열)
         "center": s.CNTER_NM,                                       # 측정 센터명
+        "de": s.MESURE_DE.astype(str),                               # 측정일(YYYYMMDD)
+        "place": s.MESURE_PLACE_FLAG_NM,                              # 측정장소(센터/출장)
     })
     for k, c in COL.items():
         out[k] = pd.to_numeric(s[c], errors="coerce")
@@ -260,6 +302,50 @@ def evaluate_knn(c):
             "method": "성별 분리, [나이·의자·제자리걷기·3m] 표준화 유클리드 거리, 이웃 등급 중앙값"}
 
 
+GRADE6_FROM = "20250602"   # 인증등급 6등급 체계 시행일. 이전은 1~3등급+참가증이라 섞지 않음
+
+
+def build_grade_knn(s):
+    """예상 인증등급용 이웃 데이터: 6등급 체계 이후, 3항목이 모두 있는 기록."""
+    c = s[(s.de >= GRADE6_FROM) & s.grade.between(1, 6)].dropna(subset=list(TESTS)).copy().reset_index(drop=True)
+    out = {}
+    for sex in ["F", "M"]:
+        g = c[c.sex == sex]
+        mu = g[KNN_FEATS].mean(); sd = g[KNN_FEATS].std()
+        out[sex] = {"mu": [round(float(x), 3) for x in mu], "sd": [round(float(x), 3) for x in sd],
+                    "feats": KNN_FEATS, "tug_scale": 10,
+                    "rows": [[int(r.age), int(r.chair), int(r.step), int(round(r.tug * 10)), int(r.grade)]
+                             for r in g.itertuples()]}
+    return out, c
+
+
+def evaluate_grade_knn(c, test_frac=0.1):
+    """홀드아웃 검증: 기록의 10%를 숨기고 나머지로 등급을 예측해 실제와 비교.
+    기준선: 계산 없이 한 등급만 찍었을 때(정확 일치는 최빈 등급, ±1은 가장 유리한 등급)."""
+    rng = np.random.default_rng(SEED)
+    idx = rng.permutation(len(c)); n_te = int(len(c) * test_frac)
+    te, tr = idx[:n_te], idx[n_te:]
+    hits = within1 = total = 0
+    for sex in ["F", "M"]:
+        trs = [i for i in tr if c.sex[i] == sex]; tes = [i for i in te if c.sex[i] == sex]
+        mu = c.loc[trs, KNN_FEATS].mean(); sd = c.loc[trs, KNN_FEATS].std()
+        A = ((c.loc[trs, KNN_FEATS] - mu) / sd).values; B = ((c.loc[tes, KNN_FEATS] - mu) / sd).values
+        nb = NearestNeighbors(n_neighbors=KNN_K).fit(A).kneighbors(B, return_distance=False)
+        g = c.grade.values[trs]
+        for j, i in enumerate(tes):
+            pred = int(np.floor(np.median(g[nb[j]]) + 0.5))
+            hits += int(pred == c.grade[i]); within1 += int(abs(pred - c.grade[i]) <= 1); total += 1
+    gt, gtr = c.grade.values[te], c.grade.values[tr]
+    mode = int(pd.Series(gtr).mode().iloc[0])
+    best1 = max(range(1, 7), key=lambda k: float((abs(gt - k) <= 1).mean()))
+    return {"k": KNN_K, "n_train": int(len(tr)), "n_test": int(total), "seed": SEED,
+            "exact": round(hits / total, 3), "within1": round(within1 / total, 3),
+            "baseline_exact": round(float((gt == mode).mean()), 3), "baseline_exact_grade": mode,
+            "baseline_within1": round(float((abs(gt - best1) <= 1).mean()), 3), "baseline_within1_grade": best1,
+            "period_from": GRADE6_FROM,
+            "method": "성별 분리, [나이·의자·제자리걷기·3m] 표준화 유클리드 거리, 이웃 100명 등급 중앙값"}
+
+
 def build_knn(s):
     c = s.dropna(subset=list(TESTS)).copy().reset_index(drop=True)
     ex_index, ex_count = {}, collections.Counter()
@@ -404,12 +490,17 @@ def main():
     os.makedirs(a.out, exist_ok=True)
 
     df, load_info = load_fitness(a.raw)
-    s = clean_seniors(df)
-    mapping_check = verify_mapping(s)
-    norms = build_norms(s)
-    curve = build_age_curve(s)
-    knn, exercises, complete = build_knn(s)
-    knn_eval = evaluate_knn(complete)
+    s_rx = clean_seniors(df)                       # [D1] 2026.05~07: 운동처방이 있는 기록
+    covered = sorted(df.MESURE_DE.str[:6].unique())
+    it, item_info = load_items(a.raw, covered)     # [D3] 2022.01~2026.04
+    s_all = clean_seniors(pd.concat([df, it], ignore_index=True))   # 순위·체력나이·등급용 전체
+    mapping_check = verify_mapping(s_all)
+    norms = build_norms(s_all)
+    curve = build_age_curve(s_all)
+    knn, exercises, complete = build_knn(s_rx)     # 운동처방 이웃은 [D1]만
+    knn_grade, grade_set = build_grade_knn(s_all)
+    knn_eval = evaluate_grade_knn(grade_set)
+    s = s_all
     centers, unmapped = build_centers(df)
     fac_csv = [f for f in os.listdir(a.raw) if f.startswith("KS_WNTY_PHSTRN_FCLTY_STTUS")][0]
     facilities, fac_info = build_facilities(os.path.join(a.raw, fac_csv))
@@ -417,8 +508,15 @@ def main():
     meta = {
         "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "fitness": load_info,
+        "items": item_info,
+        "all_ages_records": int(len(df) + len(it)),
+        "period": {"min": str(s_all.de.min()), "max": str(s_all.de.max())},
+        "grade_set": {"records": int(len(grade_set)), "from": GRADE6_FROM},
+        "rx_set": {"records_complete": int(len(complete)), "with_prescription": int((complete.rx != "").sum()),
+                   "period_min": str(s_rx.de.min()), "period_max": str(s_rx.de.max()),
+                   "unique_members_D1": int(df[df.AGRDE_FLAG_NM == "어르신"].MBER_SEQ_NO_VALUE.nunique())},
         "seniors": {
-            "records": int(len(s)), "unique_members": int(df[df.AGRDE_FLAG_NM == "어르신"].MBER_SEQ_NO_VALUE.nunique()),
+            "records": int(len(s)), "outreach_share": round(float((s.place == "출장").mean()), 3),
             "by_sex": s.sex.value_counts().to_dict(),
             "by_band": s.band.value_counts().to_dict(),
             "valid_counts": {t: int(s[t].notna().sum()) for t in TESTS},
@@ -434,11 +532,13 @@ def main():
         "sources": [
             {"org": "서울올림픽기념국민체육진흥공단", "name": "체력측정 및 운동처방 종합 데이터",
              "platform": "문화빅데이터플랫폼", "files": load_info["files"]},
+            {"org": "서울올림픽기념국민체육진흥공단", "name": "체력측정 항목별 측정 데이터",
+             "platform": "문화빅데이터플랫폼", "files": item_info["files"]},
             {"org": "서울올림픽기념국민체육진흥공단", "name": "전국체육시설현황 데이터",
              "platform": "문화빅데이터플랫폼", "files": [fac_csv]},
         ],
     }
-    out = {"norms": norms, "age_curve": curve, "knn": knn, "exercises": exercises,
+    out = {"norms": norms, "age_curve": curve, "knn": knn, "knn_grade": knn_grade, "exercises": exercises,
            "centers": centers, "facilities": facilities, "meta": meta}
     for k, v in out.items():
         with open(os.path.join(a.out, f"{k}.json"), "w", encoding="utf-8") as fp:
